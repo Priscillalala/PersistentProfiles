@@ -17,7 +17,7 @@ using MonoMod.Cil;
 using System.Linq;
 using System.Reflection;
 
-namespace EclipseLevelsSave
+namespace PersistentProfiles
 {
     public static class BodyLoadouts
     {

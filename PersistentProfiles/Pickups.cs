@@ -17,7 +17,7 @@ using MonoMod.Cil;
 using System.Linq;
 using System.Reflection;
 
-namespace EclipseLevelsSave
+namespace PersistentProfiles
 {
     public static class Pickups
     {
@@ -27,30 +27,51 @@ namespace EclipseLevelsSave
         {
             orphanedPickupsLookup = new Dictionary<UserProfile, string>();
             On.RoR2.SaveFieldAttribute.SetupPickupsSet += SaveFieldAttribute_SetupPickupsSet;
+            if (UserProfile.saveFields != null)
+            {
+                foreach (SaveFieldAttribute saveField in UserProfile.saveFields)
+                {
+                    if (saveField.explicitSetupMethod == nameof(SaveFieldAttribute.SetupPickupsSet))
+                    {
+                        ModifyPickupsSaveField(saveField);
+                    }
+                }
+            }
         }
 
         private static void SaveFieldAttribute_SetupPickupsSet(On.RoR2.SaveFieldAttribute.orig_SetupPickupsSet orig, SaveFieldAttribute self, FieldInfo fieldInfo)
         {
             orig(self, fieldInfo);
-            Func<UserProfile, string> origGetter = self.getter;
-            self.getter = (userProfile) =>
+            ModifyPickupsSaveField(self);
+        }
+
+        public static void ModifyPickupsSaveField(SaveFieldAttribute saveField)
+        {
+            Func<UserProfile, string> origGetter = saveField.getter;
+            saveField.getter = (userProfile) =>
             {
                 string valueString = origGetter(userProfile);
                 if (orphanedPickupsLookup.TryGetValue(userProfile, out string orphanedPickups))
                 {
+                    PersistentProfiles.logger.LogInfo("Getting orphaned pickups: " + orphanedPickups);
                     valueString += " " + orphanedPickups;
                 }
                 return valueString;
             };
-            self.setter = (Action<UserProfile, string>)Delegate.Combine(self.setter, (UserProfile userProfile, string valueString) =>
+            saveField.setter = (Action<UserProfile, string>)Delegate.Combine(saveField.setter, (UserProfile userProfile, string valueString) =>
             {
-                orphanedPickupsLookup[userProfile] = string.Join(" ",
+                string orphanedPickups = string.Join(" ",
                     valueString.Split(' ')
                     .Where(x => !PickupCatalog.FindPickupIndex(x).isValid)
                     .Distinct()
                     );
+                if (!string.IsNullOrWhiteSpace(orphanedPickups))
+                {
+                    orphanedPickupsLookup[userProfile] = orphanedPickups;
+                    PersistentProfiles.logger.LogInfo($"Orphaned pickups for UserProfile {userProfile.name}: {orphanedPickups}");
+                }
             });
-            self.copier = (Action<UserProfile, UserProfile>)Delegate.Combine(self.copier, (UserProfile srcProfile, UserProfile destProfile) =>
+            saveField.copier = (Action<UserProfile, UserProfile>)Delegate.Combine(saveField.copier, (UserProfile srcProfile, UserProfile destProfile) =>
             {
                 if (orphanedPickupsLookup.TryGetValue(srcProfile, out string orphanedPickups))
                 {

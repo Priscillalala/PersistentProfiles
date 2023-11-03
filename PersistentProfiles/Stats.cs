@@ -9,201 +9,135 @@ using System.Runtime.CompilerServices;
 using System.Collections.Generic;
 using System.Text;
 using HG;
-using RoR2.Stats;
 using BepInEx.Configuration;
 using System.Xml.Linq;
-using Mono.Cecil.Cil;
-using MonoMod.Cil;
 using System.Linq;
-using System.Reflection;
 using System.Xml;
+using RoR2.Stats;
+using MonoMod.Cil;
+using Mono.Cecil.Cil;
 
-namespace EclipseLevelsSave
+namespace PersistentProfiles
 {
     public static class Stats
     {
-        const string trustedProfileFlag = "GS_PersistentProfiles_Trusted";
-        const string eclipseString = "Eclipse.";
-        const int maxVanillaEclipseLevel = 8;
-
-        public static bool ignoreModdedEclipse;
-        private static int restoringUnlockableCount;
+        public static bool includeStats;
+        public static Dictionary<StatSheet, Dictionary<string, string>> orphanedStatsLookup;
+        public static Dictionary<StatSheet, HashSet<string>> orphanedUnlocksLookup;
 
         public static void Init()
         {
-            On.RoR2.XmlUtility.ToXml += XmlUtility_ToXml;
-            On.RoR2.XmlUtility.FromXml += XmlUtility_FromXml;
-            UserProfile.onUnlockableGranted += UserProfile_onUnlockableGranted;
-            On.RoR2.UserProfile.RevokeUnlockable += UserProfile_RevokeUnlockable;
+            if (includeStats)
+            {
+                orphanedStatsLookup = new Dictionary<StatSheet, Dictionary<string, string>>();
+            }
+            orphanedUnlocksLookup = new Dictionary<StatSheet, HashSet<string>>();
+
+            IL.RoR2.XmlUtility.GetStatsField += XmlUtility_GetStatsField;
+            On.RoR2.XmlUtility.CreateStatsField += XmlUtility_CreateStatsField;
+            On.RoR2.Stats.StatSheet.Copy += StatSheet_Copy;
         }
 
-        private static XDocument XmlUtility_ToXml(On.RoR2.XmlUtility.orig_ToXml orig, UserProfile userProfile)
+        private static void StatSheet_Copy(On.RoR2.Stats.StatSheet.orig_Copy orig, StatSheet src, StatSheet dest)
         {
-            XDocument doc = orig(userProfile);
-            if (doc?.Root != null)
+            orig(src, dest);
+            if (includeStats && orphanedStatsLookup.TryGetValue(src, out Dictionary<string, string> orphanedStats))
             {
-                doc.Root.Add(new XElement(trustedProfileFlag));
+                orphanedStatsLookup[dest] = orphanedStats;
             }
-            return doc;
+            if (orphanedUnlocksLookup.TryGetValue(src, out HashSet<string> orphanedUnlocks))
+            {
+                orphanedUnlocksLookup[dest] = orphanedUnlocks;
+            }
         }
 
-        private static UserProfile XmlUtility_FromXml(On.RoR2.XmlUtility.orig_FromXml orig, XDocument doc)
+        private static void XmlUtility_GetStatsField(ILContext il)
         {
-            UserProfile userProfile = orig(doc);
-            if (userProfile != null && doc?.Root != null && doc.Root.Element(trustedProfileFlag) == null)
+            ILCursor c = new ILCursor(il);
+            /*if (c.TryGotoNext(MoveType.AfterLabel, x => x.MatchRet()))
             {
-                RestoreEclipseUnlockables(userProfile, doc);
+                c.Emit(OpCodes.Ldarg, 2);
+                c.EmitDelegate<Action<StatSheet>>(dest =>
+                {
+                    orphanedStatsLookup[dest] = new Dictionary<string, string>();
+                    orphanedUnlocksLookup[dest] = new HashSet<string>();
+                });
             }
-            return userProfile;
-        }
-
-        public static void RestoreEclipseUnlockables(UserProfile userProfile, XDocument doc)
-        {
-            Dictionary<string, int> survivorNameToHighestEclipseLevel = new Dictionary<string, int>();
-            foreach (string achievementIdentifier in userProfile.achievementsList)
+            else Debug.LogError("Failed IL 1!");*/
+            if (includeStats)
             {
-                if (achievementIdentifier.StartsWith(eclipseString) && TryParseEclipseUnlockable(achievementIdentifier, out string survivorName, out int eclipseLevel))
+                int locStatNameIndex = -1;
+                int locStatValueIndex = -1;
+                if (c.TryGotoNext(MoveType.Before,
+                    x => x.MatchLdloc(out locStatNameIndex),
+                    x => x.MatchCallOrCallvirt<StatDef>(nameof(StatDef.Find)),
+                    x => x.MatchLdloc(out locStatValueIndex),
+                    x => x.MatchCallOrCallvirt<StatSheet>(nameof(StatSheet.SetStatValueFromString))
+                    ))
                 {
-                    if (survivorNameToHighestEclipseLevel.TryGetValue(survivorName, out int highestEclipseLevel))
+                    c.Index += 2;
+                    c.Emit(OpCodes.Dup);
+                    c.Emit(OpCodes.Ldloc, locStatNameIndex);
+                    c.Emit(OpCodes.Ldloc, locStatValueIndex);
+                    c.Emit(OpCodes.Ldarg, 2);
+                    c.EmitDelegate<Action<StatDef, string, string, StatSheet>>((statDef, name, value, dest) =>
                     {
-                        survivorNameToHighestEclipseLevel[survivorName] = Math.Max(highestEclipseLevel, eclipseLevel);
-                    }
-                    else
-                    {
-                        survivorNameToHighestEclipseLevel.Add(survivorName, eclipseLevel);
-                    }
-                }
-            }
-            StringBuilder stringBuilder = HG.StringBuilderPool.RentStringBuilder();
-            foreach (KeyValuePair<string, int> pair in survivorNameToHighestEclipseLevel)
-            {
-                int highestUnlockedLevel = pair.Value;
-                if (ignoreModdedEclipse)
-                {
-                    highestUnlockedLevel = Math.Min(highestUnlockedLevel, maxVanillaEclipseLevel + 1);
-                }
-                for (int i = EclipseRun.minUnlockableEclipseLevel; i <= highestUnlockedLevel; i++)
-                {
-                    stringBuilder.Clear();
-                    stringBuilder.Append(eclipseString).Append(pair.Key).Append(".").AppendInt(i);
-                    RestoreEclipseUnlockable(userProfile, stringBuilder.ToString());
-                }
-            }
-            HG.StringBuilderPool.ReturnStringBuilder(stringBuilder);
-
-            HashSet<string> cleanSurvivorNames = new HashSet<string>();
-            if (TryFindStatsElement(doc, out XElement statsElement))
-            {
-                foreach (string eclipseUnlockableName in statsElement
-                    .Elements("unlock")
-                    .Select(x => (x.Nodes().FirstOrDefault(node => node.NodeType == XmlNodeType.Text) as XText)?.Value)
-                    .Where(x => x != null && x.StartsWith(eclipseString))
-                    )
-                {
-                    if (TryParseEclipseUnlockable(eclipseUnlockableName, out string survivorName, out int eclipseLevel) && cleanSurvivorNames.Add(survivorName))
-                    {
-                        if (!survivorNameToHighestEclipseLevel.TryGetValue(survivorName, out int highestEclipseLevel) || eclipseLevel > highestEclipseLevel)
+                        if (!string.IsNullOrEmpty(name) && value != null && statDef == null)
                         {
-                            UpdatePersistentEclipseUnlockables(userProfile, survivorName);
+                            if (!orphanedStatsLookup.TryGetValue(dest, out Dictionary<string, string> orphanedStats))
+                            {
+                                orphanedStatsLookup.Add(dest, orphanedStats = new Dictionary<string, string>());
+                            }
+                            orphanedStats[name] = value;
                         }
+                    });
+                }
+                else PersistentProfiles.logger.LogError($"Failed stats IL hook for {nameof(XmlUtility_GetStatsField)}!");
+            }
+
+            if (c.TryGotoNext(MoveType.Before, x => x.MatchCallOrCallvirt(typeof(UnlockableCatalog), nameof(UnlockableCatalog.GetUnlockableDef))))
+            {
+                c.MoveAfterLabels();
+                c.Emit(OpCodes.Dup);
+                c.Index++;
+                c.Emit(OpCodes.Ldarg, 2);
+                c.EmitDelegate<Func<string, UnlockableDef, StatSheet, UnlockableDef>>((name, unlockableDef, dest) =>
+                {
+                    if (!string.IsNullOrEmpty(name) && unlockableDef == null)
+                    {
+                        if (!orphanedUnlocksLookup.TryGetValue(dest, out HashSet<string> orphanedUnlocks))
+                        {
+                            orphanedUnlocksLookup.Add(dest, orphanedUnlocks = new HashSet<string>());
+                        }
+                        orphanedUnlocks.Add(name);
                     }
-                }
+                    return unlockableDef;
+                });
             }
+            else PersistentProfiles.logger.LogError($"Failed unlockables IL hook for {nameof(XmlUtility_GetStatsField)}!");
         }
 
-        public static bool TryFindStatsElement(XDocument doc, out XElement statsElement)
+        private static XElement XmlUtility_CreateStatsField(On.RoR2.XmlUtility.orig_CreateStatsField orig, string name, StatSheet statSheet)
         {
-            return (statsElement = doc?.Root?.Element("stats")) != null;
-        }
-
-        public static void RestoreEclipseUnlockable(UserProfile userProfile, string eclipseUnlockableName)
-        {
-            UnlockableDef unlockableDef = UnlockableCatalog.GetUnlockableDef(eclipseUnlockableName);
-            if (unlockableDef && !userProfile.HasUnlockable(unlockableDef))
+            XElement result = orig(name, statSheet);
+            if (includeStats && orphanedStatsLookup.TryGetValue(statSheet, out Dictionary<string, string> orphanedStats))
             {
-                restoringUnlockableCount++;
-                try
+                foreach (KeyValuePair<string, string> orphanedStat in orphanedStats)
                 {
-                    userProfile.GrantUnlockable(unlockableDef);
+                    XElement statElement = new XElement("stat", new XText(orphanedStat.Value));
+                    statElement.SetAttributeValue("name", orphanedStat.Key);
+                    result.Add(statElement);
                 }
-                finally
+            }
+            if (orphanedUnlocksLookup.TryGetValue(statSheet, out HashSet<string> orphanedUnlocks))
+            {
+                foreach (string orphanedUnlock in orphanedUnlocks)
                 {
-                    restoringUnlockableCount--;
+                    XElement unlockElement = new XElement("unlock", new XText(orphanedUnlock));
+                    result.Add(unlockElement);
                 }
             }
-            else if (userProfile.statSheet != null)
-            {
-                if (!SaveStats.orphanedUnlocksLookup.TryGetValue(userProfile.statSheet, out HashSet<string> orphanedUnlocks))
-                {
-                    SaveStats.orphanedUnlocksLookup.Add(userProfile.statSheet, orphanedUnlocks = new HashSet<string>());
-                }
-                orphanedUnlocks.Add(eclipseUnlockableName);
-            }
-        }
-
-        private static void UserProfile_onUnlockableGranted(UserProfile userProfile, UnlockableDef unlockableDef)
-        {
-            if (userProfile != null && unlockableDef && unlockableDef.cachedName.StartsWith(eclipseString) && TryParseEclipseUnlockable(unlockableDef.cachedName, out string survivorName, out _))
-            {
-                UpdatePersistentEclipseUnlockables(userProfile, survivorName);
-            }
-        }
-
-        private static void UserProfile_RevokeUnlockable(On.RoR2.UserProfile.orig_RevokeUnlockable orig, UserProfile userProfile, UnlockableDef unlockableDef)
-        {
-            orig(userProfile, unlockableDef);
-            if (userProfile != null && unlockableDef && unlockableDef.cachedName.StartsWith(eclipseString) && TryParseEclipseUnlockable(unlockableDef.cachedName, out string survivorName, out _))
-            {
-                UpdatePersistentEclipseUnlockables(userProfile, survivorName);
-            }
-        }
-
-        public static void UpdatePersistentEclipseUnlockables(UserProfile userProfile, string survivorName)
-        {
-            if (restoringUnlockableCount > 0)
-            {
-                return;
-            }
-
-            SurvivorDef survivorDef = SurvivorCatalog.FindSurvivorDef(survivorName);
-            if (survivorDef == null)
-            {
-                return;
-            }
-
-            List<UnlockableDef> eclipseLevelUnlockables = EclipseRun.GetEclipseLevelUnlockablesForSurvivor(survivorDef);
-            
-            int count = eclipseLevelUnlockables.Count;
-            if (ignoreModdedEclipse)
-            {
-                count = Math.Min(count, maxVanillaEclipseLevel);
-            }
-
-            int lastUnlockedIndex = eclipseLevelUnlockables.FindLastIndex(x => userProfile.HasUnlockable(x));
-
-            for (int i = 0; i < count; i++)
-            {
-                userProfile.achievementsList.Remove(eclipseLevelUnlockables[i].cachedName);
-            }
-            if (lastUnlockedIndex >= 0 && lastUnlockedIndex < count)
-            {
-                userProfile.achievementsList.Add(eclipseLevelUnlockables[lastUnlockedIndex].cachedName);
-            }
-            userProfile.RequestEventualSave();
-        }
-
-        public static bool TryParseEclipseUnlockable(string eclipseUnlockableString, out string survivorName, out int eclipseLevel)
-        {
-            int firstIndex = 7;
-            int lastIndex = eclipseUnlockableString.LastIndexOf('.');
-            if (firstIndex == lastIndex || !int.TryParse(eclipseUnlockableString.Substring(lastIndex + 1), out eclipseLevel))
-            {
-                survivorName = default;
-                eclipseLevel = default;
-                return false;
-            }
-            survivorName = eclipseUnlockableString.Substring(firstIndex + 1, lastIndex - firstIndex - 1);
-            return true;
+            return result;
         }
     }
 }
