@@ -1,6 +1,6 @@
 # Properly Persistent Profiles Patch Plugin
 
-> Locks-in your modded Eclipse levels, loadouts, and logbook entries to live through a lapse in their linked mod.
+> Locks-in your modded Eclipse levels, loadouts, and logbook entries to live through any lapses in their linked mod.
 
 ## What does this mod do?
 Usually, when you launch the game without a mod all the stats, log unlocks, survivor skill preferences, etc. associated with that mod are lost. This mod saves those stats in profile purgatory so you can shuffle around your other mods as much as you want.
