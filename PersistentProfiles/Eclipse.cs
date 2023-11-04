@@ -21,8 +21,8 @@ namespace PersistentProfiles
 {
     public static class Eclipse
     {
-        const string eclipseString = "Eclipse.";
-        const int maxVanillaEclipseLevel = 8;
+        public const string eclipseString = "Eclipse.";
+        public const int maxVanillaEclipseLevel = 8;
 
         public static bool ignoreModdedEclipse;
         private static int restoringUnlockableCount;
@@ -152,9 +152,9 @@ namespace PersistentProfiles
             {
                 return;
             }
-            if (survivorName.Contains(" "))
+            if (string.IsNullOrWhiteSpace(survivorName) || survivorName.Contains(" "))
             {
-                PersistentProfiles.logger.LogWarning($"Cannot add a persistent eclipse unlockable for invalid survivor name {survivorName}! Ignoring.");
+                PersistentProfiles.logger.LogWarning($"Cannot add a persistent eclipse unlockable for invalid survivor name '{survivorName}'! Ignoring.");
                 return;
             }
             SurvivorDef survivorDef = SurvivorCatalog.FindSurvivorDef(survivorName);

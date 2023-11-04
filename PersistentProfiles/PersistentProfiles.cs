@@ -43,8 +43,9 @@ namespace PersistentProfiles
             instance = this;
             config = new ConfigFile(System.IO.Path.Combine(Paths.ConfigPath, "PersistentProfiles.cfg"), true, Info.Metadata);
             Stats.includeStats = config.Bind(configSection, "Preserve Modded Stats", true, "Prevent modded stats from being wiped for as long as this mod is installed.").Value;
+            Stats.includeAllUnlocks = config.Bind(configSection, "Preserve Modded Unlockables", true, "Prevent modded unlockables that are not tied to achievements (like stage and monster logs) from being wiped for as long as this mod is installed. Eclipse unlocks are always saved.").Value;
             Stats.Init();
-            Eclipse.ignoreModdedEclipse = config.Bind(configSection, "Ignore Modded Eclipse Levels", true, "Only manage Eclipse 8 and below to avoid possible conflicts with mods that add new eclipse levels.").Value;
+            Eclipse.ignoreModdedEclipse = config.Bind(configSection, "Ignore Extended Eclipse Levels", true, "Only manage Eclipse 8 and below to avoid possible conflicts with mods that add new eclipse levels.").Value;
             Eclipse.Init();
             if (config.Bind(configSection, "Preserve Modded Loadouts", true, "Prevent modded loadout preferences from being wiped for as long as this mod is installed.").Value)
             {

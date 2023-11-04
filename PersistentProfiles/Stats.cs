@@ -22,6 +22,7 @@ namespace PersistentProfiles
     public static class Stats
     {
         public static bool includeStats;
+        public static bool includeAllUnlocks;
         public static Dictionary<StatSheet, Dictionary<string, string>> orphanedStatsLookup;
         public static Dictionary<StatSheet, HashSet<string>> orphanedUnlocksLookup;
 
@@ -103,7 +104,7 @@ namespace PersistentProfiles
                 c.Emit(OpCodes.Ldarg, 2);
                 c.EmitDelegate<Func<string, UnlockableDef, StatSheet, UnlockableDef>>((name, unlockableDef, dest) =>
                 {
-                    if (!string.IsNullOrEmpty(name) && unlockableDef == null)
+                    if (!string.IsNullOrEmpty(name) && unlockableDef == null && (includeAllUnlocks || name.StartsWith(Eclipse.eclipseString)))
                     {
                         if (!orphanedUnlocksLookup.TryGetValue(dest, out HashSet<string> orphanedUnlocks))
                         {
